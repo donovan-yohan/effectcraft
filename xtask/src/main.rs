@@ -176,7 +176,7 @@ fn repo_files() -> Result<Vec<String>, String> {
 }
 
 fn is_asset(path: &str) -> bool {
-    std::path::Path::new(path).extension().and_then(|e| e.to_str()).is_some_and(|e| ASSET_EXT.contains(&e.to_ascii_lowercase().as_str()))
+    std::path::Path::new(path).extension().and_then(std::ffi::OsStr::to_str).is_some_and(|e| ASSET_EXT.contains(&e.to_ascii_lowercase().as_str()))
 }
 
 fn assets() -> Result<(), String> {
@@ -384,7 +384,7 @@ fn serve_dir(dir: &std::path::Path, port: u16) -> Result<(), String> {
                 Ok(b) => ("200 OK", b),
                 Err(_) => ("404 Not Found", b"not found".to_vec()),
             };
-            let mime = match file.extension().and_then(|e| e.to_str()).unwrap_or("") {
+            let mime = match file.extension().and_then(std::ffi::OsStr::to_str).unwrap_or("") {
                 "html" => "text/html; charset=utf-8",
                 "js" => "text/javascript",
                 "wasm" => "application/wasm",
@@ -427,6 +427,8 @@ fn tests() -> Result<(), String> {
         println!("cargo-nextest not found, running cargo test (install: cargo install cargo-nextest --locked)");
         runs.push(run(Command::new(cargo).arg("test").args(targets)));
     }
+    // The test runs above hide a passing test's output, so the always-passing report runs again with --nocapture.
+    runs.push(run(Command::new(cargo).args(["test", "-p", "effectcraft-ui-egui", "--lib", "missing_translations_report", "--", "--nocapture"])));
     runs.push(run(Command::new(cargo).args(["test", "--workspace", "--doc", "--no-fail-fast"])));
     let failed: Vec<String> = runs.into_iter().filter_map(Result::err).collect();
     if failed.is_empty() { Ok(()) } else { Err(failed.join("; ")) }
