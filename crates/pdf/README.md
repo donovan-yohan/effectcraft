@@ -142,8 +142,9 @@ ffmpeg elsewhere) to check the code tables against an independent implementation
   constructors, intervals, conversions (`cvs`, `cvn`), bulk operand and snapshot copies (`aload`,
   `copy`, `getinterval`, `dictstack`, `setdash`, and `forall`, which over a dictionary charges both the copies
   of its keys and the key-value pairs of its snapshot), matrices (six slots each, a font's
-  included), encoding arrays (256 slots), the dash array `gsave` or `save` copies and the one each
-  stroke keeps, executable strings (charged conservatively before tokenization) and the copies `eq`
+  included), encoding arrays (256 slots and every glyph name's text, including each `.notdef`),
+  the dash array `gsave` or `save` copies and the one each stroke keeps, executable strings
+  (charged conservatively before tokenization) and the copies `eq`
   and `ne` compare. A dictionary charges a new entry once: its key text and a fixed slot for the
   key's `String` and the value (`def`, `store`, `put`, `>>`, `defineresource`, `definefont`, a new
   font for `findfont` or `selectfont`, and the per-key copies `scalefont`, `makefont` and

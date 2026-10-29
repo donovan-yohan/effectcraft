@@ -413,6 +413,129 @@ fn eps_runtime_read_snapshots_share_the_allocation_budget() {
     assert!(missed.is_empty(), "unbudgeted payloads: {missed:?}");
 }
 
+/// Legacy EPS encoding choices and their existing lookup-scan costs, including lenient aliases.
+fn encoding_cases() -> Vec<(String, crate::encoding::Base, usize)> {
+    use crate::encoding::Base;
+
+    let mut cases = vec![];
+    for (name, base) in [
+        ("StandardEncoding", Base::Standard),
+        ("ISOLatin1Encoding", Base::WinAnsi),
+        ("WinAnsiEncoding", Base::WinAnsi),
+        ("MacRomanEncoding", Base::WinAnsi),
+        ("UnknownEncoding", Base::WinAnsi),
+    ] {
+        if name == "StandardEncoding" || name == "ISOLatin1Encoding" {
+            cases.push((name.to_owned(), base, 0));
+        }
+        cases.push((format!("/{name} findencoding"), base, name.len()));
+        cases.push((format!("/{name} /Encoding findresource"), base, name.len() + "Encoding".len()));
+        cases.push((format!("({name}) findencoding"), base, 3 * name.len()));
+        cases.push((format!("({name}) (Encoding) findresource"), base, 3 * (name.len() + "Encoding".len())));
+    }
+    cases
+}
+
+/// The actual retained name text is an independent oracle, not a duplicated encoding table.
+fn encoding_payload_bytes(base: crate::encoding::Base) -> usize {
+    256 * std::mem::size_of::<V>() + (0..=u8::MAX).map(|c| base.name(c).unwrap_or_else(|| ".notdef".into()).len()).sum::<usize>()
+}
+
+/// Every encoding keeps 256 slots and fresh literal-name text, including each `.notdef`.
+#[test]
+fn eps_encoding_names_exact_budget_reaches_later_artwork() {
+    for (body, base, scan) in encoding_cases() {
+        let names: Vec<_> = (0..=u8::MAX).map(|c| base.name(c).unwrap_or_else(|| ".notdef".into())).collect();
+        let mut it = Interp::new([0.0, 0.0, 100.0, 100.0]);
+        it.allocation_budget = encoding_payload_bytes(base) + scan;
+        it.run(format!("{body} 0 0 10 10 rectfill").as_bytes());
+        assert_eq!(it.st.len(), 1, "{body}: exactly one complete encoding");
+        let V::Array(a) = &it.st[0] else { panic!("encodings remain arrays") };
+        let a = a.borrow();
+        assert_eq!(a.len(), 256);
+        for (value, name) in a.iter().zip(&names) {
+            assert!(matches!(value, V::Lit(n) if n.as_ref() == name), "{body}: literal glyph names must be unchanged");
+        }
+        assert_eq!(it.allocation_budget, 0, "{body}: every kept name byte must be charged");
+        drop(a);
+        let (nodes, _, skipped) = it.b.finish();
+        assert_eq!(nodes.len(), 1, "{body}: the exact budget must reach later artwork");
+        assert!(skipped.is_empty(), "{body}: {skipped:?}");
+    }
+}
+
+/// A short payload budget refuses before publishing an encoding; Quit escapes nested `stopped`.
+#[test]
+fn eps_encoding_names_short_budget_preserves_prior_artwork() {
+    for (body, base, scan) in encoding_cases() {
+        let bytes = encoding_payload_bytes(base);
+        for budget in [0, 256 * std::mem::size_of::<V>(), bytes - 1] {
+            let mut it = Interp::new([0.0, 0.0, 100.0, 100.0]);
+            it.run(b"0 0 10 10 rectfill 42");
+            it.allocation_budget = budget + scan;
+            it.run(format!("{{ {{ {body} 20 20 10 10 rectfill }} stopped 40 40 10 10 rectfill }} stopped 60 60 10 10 rectfill").as_bytes());
+            assert_eq!(it.st.len(), 1, "{body}, {budget}: no partial encoding or stopped result");
+            assert_eq!(it.st[0].num(), Some(42.0));
+            assert_eq!(it.allocation_budget, budget, "{body}: precharge the entire encoding atomically after lookup scans");
+            let (nodes, _, skipped) = it.b.finish();
+            assert_eq!(nodes.len(), 1, "{body}: Quit must keep prior artwork and suppress every later drawing");
+            assert_eq!(skipped, ["PostScript (allocation limit)"], "{body}, {budget}");
+        }
+    }
+}
+
+/// Kept and discarded encodings spend the same cumulative payload budget, without refunds.
+#[test]
+fn eps_encoding_names_repeated_arrays_do_not_refund_budget() {
+    for (body, base, scan) in encoding_cases() {
+        let bytes = encoding_payload_bytes(base);
+        for discard in ["", "pop"] {
+            for short in [0, 1] {
+                let mut it = Interp::new([0.0, 0.0, 100.0, 100.0]);
+                it.run(b"0 0 10 10 rectfill");
+                // A prior string and the encodings must use the same counter.
+                it.allocation_budget = 3 + 3 * (bytes + scan) - short;
+                it.run(format!("3 string pop {{ 3 {{ {body} {discard} }} repeat }} stopped 20 20 10 10 rectfill").as_bytes());
+                let fits = short == 0;
+                let arrays = if discard.is_empty() { if fits { 3 } else { 2 } } else { 0 };
+                assert_eq!(it.st.len(), arrays + usize::from(fits), "{body}, {discard}, short {short}");
+                assert!(it.st.iter().take(arrays).all(|v| matches!(v, V::Array(_)) && v.item_count() == 256));
+                if fits {
+                    assert!(matches!(it.st.last(), Some(V::Bool(false))));
+                }
+                assert_eq!(it.allocation_budget, if fits { 0 } else { bytes - 1 }, "{body}: every completed array must stay charged");
+                let (nodes, _, skipped) = it.b.finish();
+                assert_eq!(nodes.len(), if fits { 2 } else { 1 }, "{body}: keep earlier artwork");
+                if fits {
+                    assert!(skipped.is_empty(), "{body}: {skipped:?}");
+                } else {
+                    assert_eq!(skipped, ["PostScript (allocation limit)"], "{body}");
+                }
+            }
+        }
+    }
+}
+
+/// Encoding results remain fresh mutable arrays of literal names with the legacy mappings.
+#[test]
+fn eps_encoding_names_preserve_fresh_arrays_and_legacy_mappings() {
+    for (body, base, _) in encoding_cases() {
+        let mut it = Interp::new([0.0, 0.0, 100.0, 100.0]);
+        it.run(format!("{body} {body}").as_bytes());
+        assert_eq!(it.st.len(), 2, "{body}");
+        let (V::Array(a), V::Array(b)) = (&it.st[0], &it.st[1]) else { panic!("encodings remain arrays") };
+        assert!(!Rc::ptr_eq(a, b), "{body}: arrays must remain independently mutable");
+        for (c, value) in b.borrow().iter().enumerate() {
+            let expected = base.name(c as u8).unwrap_or_else(|| ".notdef".into());
+            assert!(matches!(value, V::Lit(n) if n.as_ref() == expected), "{body}: code {c}");
+        }
+        a.borrow_mut()[65] = V::Lit("changed".into());
+        assert!(matches!(&b.borrow()[65], V::Lit(n) if n.as_ref() == "A"));
+        let (_, _, skipped) = it.b.finish();
+        assert!(skipped.is_empty(), "{body}: {skipped:?}");
+    }
+}
+
 /// Numeric `copy` must charge all new operand slots before extending the stack.
 #[test]
 fn eps_numeric_copy_charges_new_operand_slots() {

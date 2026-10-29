@@ -1,6 +1,6 @@
 use super::eps::embedded_fonts;
 use super::scanner::Src;
-use super::text::encoding_array;
+use super::text::{encoding_array, encoding_bytes};
 use super::value::{DictRef, Flow, GState, V, matrix_val, new_dict};
 use super::{Affine, BezPath, Builder, Cap, HashMap, Interp, Join, Rc};
 
@@ -257,10 +257,12 @@ impl Interp {
         Ok(())
     }
 
-    /// Charge all 256 encoding slots before constructing and pushing their glyph-name array.
+    /// Charge the slots and fresh name text before constructing or publishing an encoding array.
     pub(super) fn push_encoding(&mut self, name: &str) -> Result<(), Flow> {
-        self.allocate_items(256)?;
-        self.push(encoding_array(name));
+        // Keep the legacy choice: ISO Latin-1 and other requested encodings approximate WinAnsi.
+        let base = if name == "StandardEncoding" { crate::encoding::Base::Standard } else { crate::encoding::Base::WinAnsi };
+        self.allocate(encoding_bytes(base))?;
+        self.push(encoding_array(base));
         Ok(())
     }
 

@@ -4,11 +4,16 @@ use super::{Affine, BezPath, FastKey, FillRule, Font, FontKey, Glyphs, HashMap, 
 
 // ------------------------------------------------------------------ text
 
-/// An encoding array of glyph names (`StandardEncoding`; `ISOLatin1Encoding` and others are
-/// approximated by WinAnsi, which agrees with ISO Latin-1 on the printable codes).
-pub(super) fn encoding_array(name: &str) -> V {
-    let base = if name == "StandardEncoding" { crate::encoding::Base::Standard } else { crate::encoding::Base::WinAnsi };
-    array((0..256).map(|c| V::Lit(base.name(c as u8).unwrap_or_else(|| ".notdef".into()).into())).collect())
+/// The exact payload an encoding array keeps: 256 slots and each fresh glyph name's text.
+/// `Base::name` returns an owned `String`; measure it temporarily before retaining any names.
+pub(super) fn encoding_bytes(base: crate::encoding::Base) -> usize {
+    256 * std::mem::size_of::<V>() + (0..=u8::MAX).map(|c| base.name(c).map_or(".notdef".len(), |n| n.len())).sum::<usize>()
+}
+
+/// An encoding array of glyph names, constructed only after its full payload is charged.
+/// The caller selects StandardEncoding or the legacy WinAnsi approximation for other encodings.
+pub(super) fn encoding_array(base: crate::encoding::Base) -> V {
+    array((0..=u8::MAX).map(|c| V::Lit(base.name(c).unwrap_or_else(|| ".notdef".into()).into())).collect())
 }
 
 /// An encoding entry's glyph name, shared: a name other than `.notdef`, else none.
